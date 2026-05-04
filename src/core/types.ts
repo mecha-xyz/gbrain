@@ -5,7 +5,20 @@
 // (e.g. "attended meetings" vs "received emails").
 // `code` (v0.19.0): tree-sitter-chunked source files; consumed by code-def /
 // code-refs / code-callers / code-callees + Cathedral II two-pass retrieval.
-export type PageType = 'person' | 'company' | 'deal' | 'yc' | 'civic' | 'project' | 'concept' | 'source' | 'media' | 'writing' | 'analysis' | 'guide' | 'hardware' | 'architecture' | 'meeting' | 'note' | 'email' | 'slack' | 'calendar-event' | 'code';
+//
+// ── Mecha PE/holdco extensions ──────────────────────────────────────────
+// Added for HoldCo/portco operating-partner workflows. Distinct from
+// upstream `company` (generic) so portfolio-scoped queries can filter by
+// type without YAML inspection. Time-stamped artifacts (`kpi-snapshot`,
+// `covenant-test`, `mbr`, `qbr`, `board-meeting`) are kept separate
+// because they recur per (entity, period) and chronological ordering is
+// load-bearing for trajectory queries.
+export type PageType = 'person' | 'company' | 'deal' | 'yc' | 'civic' | 'project' | 'concept' | 'source' | 'media' | 'writing' | 'analysis' | 'guide' | 'hardware' | 'architecture' | 'meeting' | 'note' | 'email' | 'slack' | 'calendar-event' | 'code'
+  // ── Mecha PE/holdco additions ──
+  | 'portco' | 'fund' | 'lender' | 'customer' | 'supplier' | 'competitor'
+  | 'add-on-target' | 'kpi-snapshot' | 'covenant-test' | 'capex-project'
+  | 'board-meeting' | 'mbr' | 'qbr' | 'value-creation-plan'
+  | 'incident' | 'contract' | 'committee';
 
 export interface Page {
   id: number;
