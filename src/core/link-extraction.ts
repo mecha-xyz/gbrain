@@ -43,8 +43,25 @@ export type LinkResolutionType = 'qualified' | 'unqualified';
  *   - Gbrain canonical: people, companies, meetings, concepts, deal, civic, project, source, media, yc, projects
  *   - Our domain extensions: tech, finance, personal, openclaw (domain-organized wikis)
  *   - Our entity prefix: entities (we kept some legacy entities/projects/ pages)
+ *
+ * ── Mecha PE/holdco extensions ──────────────────────────────────────────
+ *   - portcos: portfolio companies the HoldCo owns (vs generic `companies/`).
+ *     Split is load-bearing: "show portfolio-wide X" queries filter by dir
+ *     prefix in O(1) instead of scanning frontmatter.
+ *   - funds, lenders: capital-stack counterparties.
+ *   - customers, suppliers, competitors: portco commercial graph.
+ *   - kpis, covenants, capex_projects, contracts: time-stamped or governance
+ *     artifacts that need their own slug namespace for clean enumeration.
+ *   - add_ons: M&A pipeline targets distinct from closed `portcos/`.
+ *   - board_seats, board_meetings, committees, value_creation_plans,
+ *     incidents: governance + decision-record entities.
  */
-const DIR_PATTERN = '(?:people|companies|meetings|concepts|deal|civic|project|projects|source|media|yc|tech|finance|personal|openclaw|entities)';
+const DIR_PATTERN = '(?:people|companies|meetings|concepts|deal|civic|project|projects|source|media|yc|tech|finance|personal|openclaw|entities' +
+  // ── Mecha PE/holdco additions ──
+  '|portcos|funds|lenders|customers|suppliers|competitors' +
+  '|add_ons|board_seats|committees|value_creation_plans' +
+  '|kpis|covenants|capex_projects|contracts|incidents|board_meetings' +
+  ')';
 
 /**
  * Match `[Name](path)` markdown links pointing to entity directories.
@@ -461,6 +478,20 @@ const ADVISOR_ROLE_RE = /\b(?:full-time advisor|professional advisor|advises (?:
 // pages mentioning their employees use the page-role layer differently.
 const EMPLOYEE_ROLE_RE = /\b(?:is an? (?:senior|staff|principal|lead|backend|frontend|full-?stack|ML|data|security|DevOps|platform)? ?engineer at|is an? (?:senior|staff|principal|lead)? ?(?:developer|designer|product manager|engineering manager|director|VP) (?:at|of)|holds? the (?:CTO|CEO|CFO|COO|CMO|CRO|VP) (?:role|position|seat|title) at|is the (?:CTO|CEO|CFO|COO|CMO|CRO) of|employee at|on the team at|works on .{0,30} at)\b/i;
 
+// ── Mecha PE/holdco extensions ──────────────────────────────────────────
+//
+// Board membership verbs. Distinct from ADVISES_RE — board seats are formal
+// governance roles with fiduciary duty, while advisory is contractual and
+// non-fiduciary. The distinction matters for value-creation-plan attribution
+// and for D&O insurance scope. Misclassifying a board director as an advisor
+// loses signal that operating partners actively use.
+//
+// Calibration target: catch "joined the board of", "appointed to the board",
+// "stepped off the board", "sits on Acme's board", "serves on the board of",
+// "named to the board". Stay narrow — generic "the board met" is not a
+// directional edge.
+const BOARD_RE = /\b(?:joined .{0,20} board|appointed to .{0,20} board|named to .{0,20} board|elected to .{0,20} board|sits on .{0,20} board|serves on .{0,20} board|stepped (?:off|down from) .{0,20} board|board (?:director|seat) (?:at|of|on)|board member (?:at|of)|director on .{0,20} board)\b/i;
+
 /**
  * Infer link_type from page context. Deterministic regex heuristics, no LLM.
  *
@@ -484,6 +515,12 @@ export function inferLinkType(pageType: PageType, context: string, globalContext
   if ((pageType as string) === 'meeting') return 'attended';
   // Per-edge verb rules.
   if (FOUNDED_RE.test(context)) return 'founded';
+  // ── Mecha PE/holdco: board seats before investment. A person who both
+  // invested AND sits on the board should classify as board director;
+  // the investment fact lives on the deal/cap-table edge separately.
+  if (BOARD_RE.test(context) && targetSlug && (targetSlug.startsWith('portcos/') || targetSlug.startsWith('companies/'))) {
+    return 'sits_on_board_of';
+  }
   if (INVESTED_RE.test(context)) return 'invested_in';
   if (ADVISES_RE.test(context)) return 'advises';
   if (WORKS_AT_RE.test(context)) return 'works_at';
@@ -575,6 +612,70 @@ export const FRONTMATTER_LINK_MAP: FrontmatterFieldMapping[] = [
   { fields: ['sources'], type: 'discussed_in', direction: 'incoming', dirHint: ['source', 'media'] },
   { fields: ['source'], type: 'source', direction: 'outgoing', dirHint: '' /* already slug-shaped */ },
   { fields: ['related', 'see_also'], type: 'related_to', direction: 'outgoing', dirHint: '' },
+
+  // ── Mecha PE/holdco extensions ──────────────────────────────────────
+  // All structured-frontmatter so skill prompts produce deterministic edges
+  // without prose-regex tuning. Direction convention: 'incoming' means the
+  // page being written is the TO side; the FROM side is the resolved field
+  // value (subject-of-verb semantics, matching upstream's `key_people`/
+  // `attendees` pattern).
+
+  // Ownership / federation arc
+  { fields: ['owners', 'cap_table'], pageType: 'portco', type: 'owns_stake_in', direction: 'incoming', dirHint: ['funds', 'people', 'portcos'] },
+  { fields: ['holdco', 'parent'], pageType: 'portco', type: 'subsidiary_of', direction: 'outgoing', dirHint: 'portcos' },
+
+  // Governance / accountability — the "who is on the hook" graph
+  { fields: ['board'], pageType: 'portco', type: 'sits_on_board_of', direction: 'incoming', dirHint: 'people' },
+  { fields: ['board_chair'], pageType: 'portco', type: 'chairs_board_of', direction: 'incoming', dirHint: 'people' },
+  { fields: ['operating_partner', 'op_lead'], pageType: 'portco', type: 'sponsors', direction: 'incoming', dirHint: 'people' },
+  { fields: ['ceo', 'cfo', 'cro', 'cto', 'coo', 'cmo'], pageType: 'portco', type: 'c_suite_at', direction: 'incoming', dirHint: 'people' },
+  { fields: ['key_people'], pageType: 'portco', type: 'works_at', direction: 'incoming', dirHint: 'people' },
+  { fields: ['chairs', 'members'], pageType: 'committee', type: 'sits_on', direction: 'incoming', dirHint: 'people' },
+
+  // Commercial / supply graph — concentration risk lives here
+  { fields: ['top_customers'], pageType: 'portco', type: 'customer_of', direction: 'incoming', dirHint: 'customers' },
+  { fields: ['top_suppliers'], pageType: 'portco', type: 'supplier_to', direction: 'incoming', dirHint: 'suppliers' },
+  { fields: ['competitors'], pageType: 'portco', type: 'competes_with', direction: 'outgoing', dirHint: 'competitors' },
+  { fields: ['relationship_owner'], pageType: 'customer', type: 'owns_relationship_with', direction: 'incoming', dirHint: 'people' },
+  { fields: ['portco'], pageType: 'customer', type: 'customer_of', direction: 'outgoing', dirHint: 'portcos' },
+  { fields: ['portco'], pageType: 'supplier', type: 'supplier_to', direction: 'outgoing', dirHint: 'portcos' },
+
+  // Capital structure
+  { fields: ['lenders'], pageType: 'portco', type: 'lends_to', direction: 'incoming', dirHint: 'lenders' },
+  { fields: ['portco'], pageType: 'covenant-test', type: 'tests_covenant_for', direction: 'outgoing', dirHint: 'portcos' },
+  { fields: ['lender'], pageType: 'covenant-test', type: 'set_by', direction: 'outgoing', dirHint: 'lenders' },
+
+  // M&A pipeline + closed
+  { fields: ['target_for'], pageType: 'add-on-target', type: 'pipeline_for', direction: 'outgoing', dirHint: 'portcos' },
+  { fields: ['acquired'], pageType: 'portco', type: 'acquired', direction: 'outgoing', dirHint: ['add_ons', 'portcos'] },
+
+  // Decisions & events — the narrative layer
+  { fields: ['attendees'], pageType: 'board-meeting', type: 'attended', direction: 'incoming', dirHint: 'people' },
+  { fields: ['portco'], pageType: 'board-meeting', type: 'governs', direction: 'outgoing', dirHint: 'portcos' },
+  { fields: ['decisions', 'approved'], pageType: 'board-meeting', type: 'decided_in', direction: 'incoming', dirHint: ['capex_projects', 'add_ons', 'value_creation_plans', 'contracts'] },
+  { fields: ['portco'], pageType: 'mbr', type: 'reports_on', direction: 'outgoing', dirHint: 'portcos' },
+  { fields: ['portco'], pageType: 'qbr', type: 'reports_on', direction: 'outgoing', dirHint: 'portcos' },
+
+  // KPI snapshots — time-series via per-period pages
+  { fields: ['portco'], pageType: 'kpi-snapshot', type: 'snapshots', direction: 'outgoing', dirHint: 'portcos' },
+  { fields: ['source_doc'], pageType: 'kpi-snapshot', type: 'sourced_from', direction: 'outgoing', dirHint: ['source', 'media'] },
+
+  // Capex governance
+  { fields: ['portco'], pageType: 'capex-project', type: 'capex_for', direction: 'outgoing', dirHint: 'portcos' },
+  { fields: ['sponsor'], pageType: 'capex-project', type: 'sponsored_by', direction: 'outgoing', dirHint: 'people' },
+  { fields: ['approved_in'], pageType: 'capex-project', type: 'approved_in', direction: 'outgoing', dirHint: 'board_meetings' },
+
+  // Value creation plan — the operating thesis, made queryable
+  { fields: ['portco'], pageType: 'value-creation-plan', type: 'plan_for', direction: 'outgoing', dirHint: 'portcos' },
+  { fields: ['owner'], pageType: 'value-creation-plan', type: 'owned_by', direction: 'outgoing', dirHint: 'people' },
+
+  // Material events
+  { fields: ['affects'], pageType: 'incident', type: 'affects', direction: 'outgoing', dirHint: ['portcos', 'customers', 'contracts', 'people'] },
+  { fields: ['triggered_by'], pageType: 'incident', type: 'triggered_by', direction: 'outgoing', dirHint: ['portcos', 'customers', 'suppliers', 'people'] },
+
+  // Contracts (material — not every PO; think MSAs, debt agreements, leases)
+  { fields: ['parties'], pageType: 'contract', type: 'party_to', direction: 'incoming', dirHint: ['portcos', 'customers', 'suppliers', 'lenders'] },
+  { fields: ['portco'], pageType: 'contract', type: 'binds_portco', direction: 'outgoing', dirHint: 'portcos' },
 ];
 
 // ─── Slug resolver ──────────────────────────────────────────────
